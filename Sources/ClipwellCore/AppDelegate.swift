@@ -37,6 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         hotKey.register()
         monitor.start()
+        // Honour the persisted master switch, so turning capture off survives
+        // a relaunch rather than silently resuming.
+        monitor.setPaused(!Preferences.shared.recordHistory)
 
         Log.ui.info("Clipwell launched; storage at \(store.storageRoot.path, privacy: .public)")
     }

@@ -115,8 +115,12 @@ final class MenuBarController: NSObject {
     }
 
     @objc private func togglePause() {
-        monitor.setPaused(!monitor.isPaused)
-        statusItem.button?.appearsDisabled = monitor.isPaused
+        let paused = !monitor.isPaused
+        monitor.setPaused(paused)
+        // Same setting as "Record clipboard history" in Preferences, so keep
+        // the two in step rather than letting them disagree.
+        Preferences.shared.recordHistory = !paused
+        statusItem.button?.appearsDisabled = paused
     }
 
     @objc private func showHistory() { panel.show() }

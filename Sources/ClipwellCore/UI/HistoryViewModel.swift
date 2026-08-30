@@ -49,8 +49,13 @@ final class HistoryViewModel: ObservableObject {
         let query = searchQuery
         let kind = kindFilter
         let store = self.store
+        // With no search term the list is capped at the user's Display count;
+        // once they're searching, show everything that matches.
+        let limit = query.trimmingCharacters(in: .whitespaces).isEmpty
+            ? Preferences.shared.displayCount
+            : Preferences.shared.maxItems
         Task.detached(priority: .userInitiated) {
-            let results = store.items(matching: query, kind: kind)
+            let results = store.items(matching: query, kind: kind, limit: limit)
             await MainActor.run {
                 let previousID = self.selectedItem?.id
                 self.items = results

@@ -345,3 +345,49 @@ final class ClipMetaTests: XCTestCase {
         XCTAssertEqual(meta.imageDimensionsLabel, "1920 x 1080")
     }
 }
+
+final class PreferencesTests: XCTestCase {
+
+    func testDisplayCountNeverExceedsRemembered() {
+        let originalMax = Preferences.shared.maxItems
+        let originalDisplay = Preferences.shared.displayCount
+        defer {
+            Preferences.shared.maxItems = originalMax
+            Preferences.shared.displayCount = originalDisplay
+        }
+
+        Preferences.shared.maxItems = 50
+        Preferences.shared.displayCount = 200
+        // Showing more clippings than are kept is incoherent, so the getter
+        // clamps rather than promising a list it cannot fill.
+        XCTAssertLessThanOrEqual(Preferences.shared.displayCount, Preferences.shared.maxItems)
+    }
+
+    func testDisplayCountHasAFloor() {
+        let original = Preferences.shared.displayCount
+        defer { Preferences.shared.displayCount = original }
+
+        Preferences.shared.displayCount = 0
+        XCTAssertGreaterThanOrEqual(Preferences.shared.displayCount, 5)
+    }
+
+    func testRecordHistoryPersists() {
+        let original = Preferences.shared.recordHistory
+        defer { Preferences.shared.recordHistory = original }
+
+        Preferences.shared.recordHistory = false
+        XCTAssertFalse(Preferences.shared.recordHistory)
+        Preferences.shared.recordHistory = true
+        XCTAssertTrue(Preferences.shared.recordHistory)
+    }
+
+    func testPollIntervalIsClampedToASaneRange() {
+        let original = Preferences.shared.pollInterval
+        defer { Preferences.shared.pollInterval = original }
+
+        Preferences.shared.pollInterval = 0.001
+        XCTAssertGreaterThanOrEqual(Preferences.shared.pollInterval, 0.1)
+        Preferences.shared.pollInterval = 60
+        XCTAssertLessThanOrEqual(Preferences.shared.pollInterval, 2.0)
+    }
+}

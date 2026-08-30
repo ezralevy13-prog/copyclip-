@@ -19,12 +19,12 @@ final class SettingsWindowController {
         if window == nil {
             let view = SettingsView(store: store, monitor: monitor, onHotKeyChanged: onHotKeyChanged)
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 480, height: 380),
+                contentRect: NSRect(x: 0, y: 0, width: 540, height: 460),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
             )
-            window.title = "Clipwell Settings"
+            window.title = "Preferences"
             window.contentView = NSHostingView(rootView: view)
             window.center()
             window.isReleasedWhenClosed = false

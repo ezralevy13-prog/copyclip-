@@ -20,6 +20,8 @@ final class Preferences {
         static let pasteAutomatically = "pasteAutomatically"
         static let recognizeText     = "recognizeTextInImages"
         static let skipSecrets       = "skipDetectedSecrets"
+        static let displayCount      = "displayCount"
+        static let recordHistory     = "recordHistory"
     }
 
     private init() {
@@ -34,6 +36,8 @@ final class Preferences {
             Key.pasteAutomatically: true,
             Key.recognizeText: true,
             Key.skipSecrets: true,
+            Key.displayCount: 20,
+            Key.recordHistory: true,
             // Password managers, pre-excluded. Most also set the concealed type,
             // but belt and braces on the one category where a leak actually hurts.
             Key.excludedBundleIDs: [
@@ -45,9 +49,25 @@ final class Preferences {
         ])
     }
 
+    /// How many clippings are kept in the history.
     var maxItems: Int {
         get { defaults.integer(forKey: Key.maxItems) }
         set { defaults.set(max(10, newValue), forKey: Key.maxItems) }
+    }
+
+    /// How many clippings the panel lists before you search or scroll.
+    /// Separate from `maxItems`: you can remember a thousand and still want a
+    /// short list in front of you.
+    var displayCount: Int {
+        get { min(max(5, defaults.integer(forKey: Key.displayCount)), maxItems) }
+        set { defaults.set(max(5, newValue), forKey: Key.displayCount) }
+    }
+
+    /// Master switch for capture. Persisted, unlike the menu bar's pause, so
+    /// turning it off survives a relaunch.
+    var recordHistory: Bool {
+        get { defaults.bool(forKey: Key.recordHistory) }
+        set { defaults.set(newValue, forKey: Key.recordHistory) }
     }
 
     var maxDiskMegabytes: Int {
