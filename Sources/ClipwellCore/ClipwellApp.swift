@@ -1,6 +1,11 @@
 import AppKit
 
 /// The app's entry point, and the single symbol the executable target needs.
+///
+/// `@MainActor` because everything it touches -- NSApplication, the delegate --
+/// is main-actor isolated. Top-level code in main.swift is itself main-actor
+/// isolated, so the call across the module boundary lines up.
+@MainActor
 public enum ClipwellApp {
     public static func run() {
         // Menu-bar app: `.accessory` keeps it out of the Dock and the app

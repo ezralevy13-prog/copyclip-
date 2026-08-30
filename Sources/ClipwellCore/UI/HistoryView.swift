@@ -83,7 +83,7 @@ private struct KindFilterMenu: View {
             }
         } label: {
             Image(systemName: viewModel.kindFilter?.symbolName ?? "line.3.horizontal.decrease.circle")
-                .foregroundStyle(viewModel.kindFilter == nil ? .secondary : .blue)
+                .foregroundStyle(viewModel.kindFilter == nil ? Color.secondary : Color.accentColor)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)

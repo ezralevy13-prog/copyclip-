@@ -16,24 +16,18 @@ final class HistoryViewModel: ObservableObject {
 
     nonisolated let store: HistoryStore
     private var reloadWorkItem: DispatchWorkItem?
-    private var observer: NSObjectProtocol?
+    private var observation: NotificationObservation?
 
     var onDismiss: (() -> Void)?
     var onPaste: ((ClipItem, Bool) -> Void)?
 
     init(store: HistoryStore) {
         self.store = store
-        observer = NotificationCenter.default.addObserver(
-            forName: HistoryStore.didChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
+        observation = NotificationObservation(
+            name: HistoryStore.didChangeNotification
+        ) { [weak self] in
             Task { @MainActor in self?.reload() }
         }
-    }
-
-    deinit {
-        if let observer { NotificationCenter.default.removeObserver(observer) }
     }
 
     var selectedItem: ClipItem? {
