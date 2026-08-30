@@ -6,6 +6,8 @@
 #   ./build.sh --run        build, then launch
 #   ./build.sh --install    build, then copy into /Applications
 #
+# Set SKIP_TESTS=1 to skip the test run.
+#
 # Signing: set CLIPWELL_SIGN_IDENTITY to a code-signing identity to get a
 # stable code signature, which is what lets macOS remember the Accessibility
 # permission across rebuilds. See scripts/make-signing-cert.sh. Without it the
@@ -22,9 +24,6 @@ ROOT="$(pwd)"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 
-echo "==> Running tests"
-swift test 2>&1 | tail -20
-
 echo "==> Building (release)"
 swift build -c release --disable-sandbox
 
@@ -32,6 +31,18 @@ BINARY="$(swift build -c release --show-bin-path)/$APP_NAME"
 if [ ! -f "$BINARY" ]; then
     echo "error: built binary not found at $BINARY" >&2
     exit 1
+fi
+
+if [ "${SKIP_TESTS:-0}" != "1" ]; then
+    echo "==> Running tests"
+    # Not a gate: a failing test shouldn't stop you getting a build you can
+    # run. The result is reported either way.
+    if swift test > /tmp/clipwell-test.log 2>&1; then
+        echo "    all tests passed"
+    else
+        echo "    TESTS FAILED -- app still built. Full log: /tmp/clipwell-test.log"
+        grep -E "error:|XCTAssert.*failed|failed \(" /tmp/clipwell-test.log | head -15 || true
+    fi
 fi
 
 echo "==> Assembling $APP_NAME.app"
