@@ -210,7 +210,10 @@ enum CodeDetector {
     private static let signals: [String] = [
         "function ", "const ", "let ", "var ", "=> {", "def ", "class ", "import ",
         "#include", "public static", "return ", "if (", "for (", "while (",
-        "</", "/>", "};", "});", "()", "::", "&&", "||", "!=", "==", "->"
+        "</", "/>", "};", "});", "()", "::", "&&", "||", "!=", "==", "->",
+        // Indentation-significant languages, which carry none of the bracket
+        // punctuation above.
+        "elif ", "self.", "lambda ", "):", "__init__"
     ]
 
     static func looksLikeCode(_ text: String) -> Bool {
@@ -224,12 +227,29 @@ enum CodeDetector {
         let indented = lines.filter { $0.hasPrefix("  ") || $0.hasPrefix("\t") }.count
         if lines.count >= 3 && indented >= max(1, lines.count / 3) { score += 2 }
 
-        // Lots of lines ending in a brace or semicolon.
-        let terminated = lines.filter {
-            let trimmed = $0.trimmingCharacters(in: .whitespaces)
-            return trimmed.hasSuffix(";") || trimmed.hasSuffix("{") || trimmed.hasSuffix("}")
+        // Block structure.
+        //
+        // Checking only for braces and semicolons is a C-family assumption, and
+        // it reads Python as prose: `def f():` / `for x in y:` has no bracket
+        // punctuation anywhere. Each language family opens or closes blocks its
+        // own way, so each gets its own marker.
+        let trimmedLines = lines.map { $0.trimmingCharacters(in: .whitespaces) }
+
+        // C family: braces and statement terminators.
+        let braceTerminated = trimmedLines.filter {
+            $0.hasSuffix(";") || $0.hasSuffix("{") || $0.hasSuffix("}")
         }.count
-        if terminated >= 2 { score += 2 }
+        if braceTerminated >= 2 { score += 2 }
+
+        // Python family: blocks open with a trailing colon. Two or more, so a
+        // list with a couple of headings ("Ingredients:") doesn't qualify.
+        let colonOpeners = trimmedLines.filter { $0.hasSuffix(":") && $0.count > 1 }.count
+        if colonOpeners >= 2 { score += 2 }
+
+        // Ruby and Lua close blocks with a bare `end`, which is distinctive
+        // enough on its own line to count by itself.
+        let bareEnds = trimmedLines.filter { $0 == "end" }.count
+        if bareEnds >= 1 { score += 2 }
 
         // Prose check: real sentences push back against a code verdict.
         let sentenceEnds = text.components(separatedBy: CharacterSet(charactersIn: ".!?")).count - 1

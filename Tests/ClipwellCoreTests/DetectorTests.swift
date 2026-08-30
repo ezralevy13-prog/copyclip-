@@ -95,6 +95,46 @@ final class CodeDetectorTests: XCTestCase {
         XCTAssertEqual(CodeDetector.guessLanguage(code), "python")
     }
 
+    /// Ruby closes blocks with a bare `end` and has no colons or semicolons,
+    /// so it exercises a different branch of the block-structure check.
+    func testDetectsRuby() {
+        let code = """
+        def process(items)
+          items.each do |item|
+            next if item.nil?
+            handle(item)
+          end
+        end
+        """
+        XCTAssertTrue(CodeDetector.looksLikeCode(code))
+    }
+
+    // MARK: - False positives
+
+    /// Lists with headings end lines in colons without being code. The colon
+    /// rule requires other signals alongside it for exactly this reason.
+    func testRejectsListsWithColonHeadings() {
+        let recipe = """
+        Ingredients:
+        - flour
+        - water
+        Instructions:
+        - mix well
+        """
+        XCTAssertFalse(CodeDetector.looksLikeCode(recipe))
+    }
+
+    func testRejectsMeetingNotes() {
+        let notes = """
+        Agenda:
+        Discuss the roadmap
+        Review headcount
+        Next steps:
+        Follow up with finance
+        """
+        XCTAssertFalse(CodeDetector.looksLikeCode(notes))
+    }
+
     func testRejectsProse() {
         let prose = """
         The quick brown fox jumps over the lazy dog. This is an ordinary \
