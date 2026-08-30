@@ -8,8 +8,12 @@ enum Paster {
     /// Restores every stored representation, rebuilding the original multi-item
     /// structure. This is what makes a paste land with the same fidelity as the
     /// original copy -- formatting intact in Word, image intact in Photoshop.
-    static func writeToPasteboard(itemID: Int64, store: HistoryStore, plainTextOnly: Bool) {
-        let pasteboard = NSPasteboard.general
+    /// - Parameter pasteboard: defaults to the general pasteboard; tests pass a
+    ///   private one so a test run never disturbs the real clipboard.
+    static func writeToPasteboard(itemID: Int64,
+                                  store: HistoryStore,
+                                  plainTextOnly: Bool,
+                                  pasteboard: NSPasteboard = .general) {
 
         // Paste-as-plain-text needs only the text representation, so ask for
         // exactly that rather than loading the item's images too.

@@ -10,7 +10,10 @@ import AppKit
 final class ClipboardMonitor {
 
     private let store: HistoryStore
-    private let pasteboard = NSPasteboard.general
+    private let pasteboard: NSPasteboard
+    /// Which app is frontmost, injected so capture filtering can be tested
+    /// without driving the real window server.
+    private let frontmostApp: () -> (bundleID: String?, name: String?)
     private var timer: DispatchSourceTimer?
     private let queue = DispatchQueue(label: "com.ezralevy.clipwell.capture", qos: .utility)
 
@@ -21,8 +24,19 @@ final class ClipboardMonitor {
 
     private(set) var isPaused = false
 
-    init(store: HistoryStore) {
+    /// - Parameters:
+    ///   - pasteboard: defaults to the general pasteboard. Tests pass a private
+    ///     one so a test run never disturbs the user's real clipboard.
+    ///   - frontmostApp: defaults to asking NSWorkspace.
+    init(store: HistoryStore,
+         pasteboard: NSPasteboard = .general,
+         frontmostApp: @escaping () -> (bundleID: String?, name: String?) = {
+             let app = NSWorkspace.shared.frontmostApplication
+             return (app?.bundleIdentifier, app?.localizedName)
+         }) {
         self.store = store
+        self.pasteboard = pasteboard
+        self.frontmostApp = frontmostApp
         self.lastChangeCount = pasteboard.changeCount
     }
 
@@ -80,7 +94,7 @@ final class ClipboardMonitor {
 
     /// Reads every item and every type. Returns nil when the contents should
     /// not be recorded at all.
-    private func readPasteboard() -> PasteboardSnapshot? {
+    func readPasteboard() -> PasteboardSnapshot? {
         guard let pasteboardItems = pasteboard.pasteboardItems, !pasteboardItems.isEmpty else { return nil }
 
         let allTypes = Set(pasteboardItems.flatMap { $0.types.map(\.rawValue) })
@@ -93,8 +107,8 @@ final class ClipboardMonitor {
             return nil
         }
 
-        let frontmost = NSWorkspace.shared.frontmostApplication
-        let bundleID = frontmost?.bundleIdentifier
+        let frontmost = frontmostApp()
+        let bundleID = frontmost.bundleID
 
         if let bundleID, Preferences.shared.excludedBundleIDs.contains(bundleID) {
             Log.capture.debug("skipping copy from excluded app")
@@ -131,7 +145,7 @@ final class ClipboardMonitor {
         let snapshot = PasteboardSnapshot(
             items: snapshots,
             sourceBundleID: bundleID,
-            sourceAppName: frontmost?.localizedName,
+            sourceAppName: frontmost.name,
             capturedAt: Date()
         )
 
