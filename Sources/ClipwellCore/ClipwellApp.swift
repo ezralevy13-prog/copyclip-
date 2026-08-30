@@ -2,9 +2,11 @@ import AppKit
 
 /// The app's entry point, and the single symbol the executable target needs.
 ///
-/// `@MainActor` because everything it touches -- NSApplication, the delegate --
-/// is main-actor isolated. Top-level code in main.swift is itself main-actor
-/// isolated, so the call across the module boundary lines up.
+/// `@MainActor` because everything it touches is: `NSApplication.shared`, the
+/// delegate property and `run()` are all main-actor isolated in AppKit. The
+/// caller is a `@main` type whose `main()` is likewise `@MainActor` -- top-level
+/// code in a `main.swift` would not work here, as it is not actor-isolated in
+/// Swift 5 language mode.
 @MainActor
 public enum ClipwellApp {
     public static func run() {
