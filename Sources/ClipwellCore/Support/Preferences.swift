@@ -18,6 +18,8 @@ final class Preferences {
         static let hotKeyModifiers   = "hotKeyModifiers"
         static let launchAtLogin     = "launchAtLogin"
         static let pasteAutomatically = "pasteAutomatically"
+        static let recognizeText     = "recognizeTextInImages"
+        static let skipSecrets       = "skipDetectedSecrets"
     }
 
     private init() {
@@ -30,6 +32,8 @@ final class Preferences {
             Key.hotKeyModifiers: Int(cmdKey | shiftKey),
             Key.launchAtLogin: false,
             Key.pasteAutomatically: true,
+            Key.recognizeText: true,
+            Key.skipSecrets: true,
             // Password managers, pre-excluded. Most also set the concealed type,
             // but belt and braces on the one category where a leak actually hurts.
             Key.excludedBundleIDs: [
@@ -91,5 +95,20 @@ final class Preferences {
     var pasteAutomatically: Bool {
         get { defaults.bool(forKey: Key.pasteAutomatically) }
         set { defaults.set(newValue, forKey: Key.pasteAutomatically) }
+    }
+
+    /// Run OCR over captured images so they can be found by their text.
+    /// Costs some CPU shortly after each image copy.
+    var recognizeTextInImages: Bool {
+        get { defaults.bool(forKey: Key.recognizeText) }
+        set { defaults.set(newValue, forKey: Key.recognizeText) }
+    }
+
+    /// Skip copies that look like credentials -- API keys, tokens, private
+    /// keys, card numbers. On by default: a clipboard manager quietly keeping a
+    /// searchable copy of your AWS keys is a worse failure than dropping a copy.
+    var skipDetectedSecrets: Bool {
+        get { defaults.bool(forKey: Key.skipSecrets) }
+        set { defaults.set(newValue, forKey: Key.skipSecrets) }
     }
 }

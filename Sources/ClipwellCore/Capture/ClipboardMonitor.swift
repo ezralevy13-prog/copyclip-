@@ -128,11 +128,33 @@ final class ClipboardMonitor {
 
         guard !snapshots.isEmpty else { return nil }
 
-        return PasteboardSnapshot(
+        let snapshot = PasteboardSnapshot(
             items: snapshots,
             sourceBundleID: bundleID,
             sourceAppName: frontmost?.localizedName,
             capturedAt: Date()
         )
+
+        // Credential heuristics. The concealed-type convention above only works
+        // when the source app cooperates, and terminals, editors and browsers
+        // -- where people actually copy keys from -- never do.
+        if Preferences.shared.skipDetectedSecrets,
+           let text = snapshot.plainText,
+           let finding = SecretDetector.scan(text) {
+            Log.capture.info("skipping likely secret: \(finding.reason, privacy: .public)")
+            NotificationCenter.default.post(
+                name: ClipboardMonitor.didSkipSecretNotification,
+                object: nil,
+                userInfo: ["reason": finding.reason]
+            )
+            return nil
+        }
+
+        return snapshot
     }
+
+    /// Posted when a capture is dropped because it looked like a credential, so
+    /// the UI can say so rather than leaving the user wondering why their copy
+    /// never showed up.
+    static let didSkipSecretNotification = Notification.Name("ClipwellDidSkipSecret")
 }

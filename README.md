@@ -13,9 +13,10 @@ Menu-bar only. No dock icon, no external dependencies, no network access.
 Requires macOS 13+ and the Xcode command line tools.
 
 ```bash
-./build.sh --run        # build, assemble Clipwell.app, launch it
+./build.sh --run        # test, build, assemble Clipwell.app, launch it
 ./build.sh --install    # build and copy to /Applications
 ./build.sh              # build only, leaves it in dist/
+swift test              # just the test suite
 ```
 
 There are no package dependencies, so the build works offline.
@@ -54,6 +55,9 @@ item on the clipboard and you press <kbd>⌘V</kbd> yourself.
 | <kbd>⌫</kbd> | Delete (when search is empty) |
 | <kbd>⇥</kbd> | Toggle list / grid view |
 | <kbd>esc</kbd> | Close |
+
+Screenshots are searchable by the text inside them — type "invoice" and the
+screenshot of an invoice comes back.
 
 Right-click the menu bar icon for settings, pause, and quit.
 
@@ -100,21 +104,42 @@ history is gigabytes, and macOS puts screenshots on the pasteboard as
 3. **Two caps with LRU eviction** — item count (default 500) and total disk
    (default 2 GB). Pinned items are exempt from both.
 
+### Finding images again
+
+Storing images is easy; finding one three days later is the actual problem. An
+image contributes nothing to a text index, so a history full of screenshots
+degrades into a wall of thumbnails you have to scroll.
+
+Clipwell runs OCR (Vision) over captured images on a background queue *after*
+the item is saved, then folds the recognized text into the search index. The
+capture path never waits on it. The extracted text is also shown under the
+preview, so it's clear why a screenshot matched. Toggle it off in Settings →
+General if you'd rather not spend the CPU.
+
 ### Storage
 
 `~/Library/Application Support/Clipwell/`
 
 ```
-history.sqlite     items + representations + FTS5 index
+history.sqlite     items + representations + blob refcounts + FTS5 index
 blobs/ab/abc123…   representations over 64 KB, content-addressed by SHA-256
 thumbnails/        400px JPEG previews
 ```
 
 Blobs are addressed by content hash, so copying the same screenshot ten times
-costs one file on disk. That also makes eviction safe: a blob is deletable
-exactly when no representation row still references its hash.
+costs one file on disk. Smaller representations live inline in the row — fewer
+files, faster reads.
 
-Smaller representations live inline in the row — fewer files, faster reads.
+Blob references are **counted in SQLite**, which is what keeps eviction cheap.
+Asking the filesystem "how much disk am I using" and "which blobs are orphaned"
+means walking the entire blob tree, and both questions come up on every single
+capture once the history reaches its cap. With refcounts, disk usage is an
+indexed `SUM` and a blob is deleted exactly when its count reaches zero. The
+tree is walked once, at startup, to reconcile the accounting against reality in
+case a crash left it drifting.
+
+Readers ask for the representations they need rather than the whole item —
+showing three lines of text shouldn't pull a 20 MB PNG off disk.
 
 Search uses FTS5, falling back to `LIKE` if the system SQLite lacks it.
 
@@ -140,6 +165,11 @@ Clipwell. Without this, auto-paste has nowhere to go.
 - Transient content is likewise skipped.
 - Any app can be excluded by bundle ID; 1Password, Bitwarden and Keychain
   Access are excluded out of the box.
+- Copies that look like credentials — API keys, provider tokens, private key
+  blocks, card numbers passing Luhn — are **not recorded**. The convention
+  above only works when the source app cooperates, and terminals, editors and
+  cloud consoles never do. The menu bar icon flashes when a copy is skipped, so
+  it is never silent. Toggle it in Settings → Privacy.
 - Capture can be paused from the menu bar.
 - Nothing leaves your machine. There is no network code in this app.
 
@@ -161,18 +191,30 @@ These are real, and worth knowing before you rely on it.
   the failure rather than silently lying about its state.
 - **Syntax highlighting is regex-based**, not a parser. It colours strings,
   comments, numbers and keywords, which is what a preview pane needs.
+- **Secret detection is a heuristic.** It targets distinctive credential
+  formats to keep false positives rare, but it will not catch a password that
+  looks like an ordinary word, and it can still be wrong in both directions.
+  It is a safety net, not a guarantee.
+- **OCR is best-effort.** Low-confidence results are discarded rather than
+  polluting the index, so text in small or stylised images may not be found.
 
 ---
 
 ## Layout
 
 ```
-Sources/Clipwell/
-  Capture/    pasteboard polling, snapshot model, classification
+Sources/Clipwell/       executable shim; entry point only
+Sources/ClipwellCore/   everything, as a library so it can be tested
+  Capture/    polling, snapshot model, classification, OCR, secret detection
   Store/      SQLite wrapper, blob store, history + eviction
   Paste/      pasteboard restore, synthetic ⌘V
   Hotkey/     Carbon global hotkey
   UI/         panel, list, previews, settings, menu bar
   Model/      item, kind, metadata
   Support/    hashing, image transcoding, preferences, logging
+Tests/ClipwellCoreTests/
 ```
+
+The library/executable split exists so the pure logic — classification,
+detection, eviction, blob accounting — is reachable from `swift test`. Those
+are the parts most likely to be subtly wrong and the cheapest to pin down.

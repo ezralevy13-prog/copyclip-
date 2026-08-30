@@ -74,17 +74,40 @@ private struct ImagePreview: View {
     @State private var image: NSImage?
 
     var body: some View {
-        ZStack {
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .padding(14)
-            } else {
-                ProgressView().controlSize(.small)
+        VStack(spacing: 0) {
+            ZStack {
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .padding(14)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            // Text found by OCR. Shown as well as indexed, so it's obvious why
+            // a screenshot matched a search and the text can be selected out.
+            if let recognized = item.meta.recognizedText, !recognized.isEmpty {
+                Divider()
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Text in image", systemImage: "text.viewfinder")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    ScrollView {
+                        Text(recognized)
+                            .font(.system(size: 11))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 110)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Full-size bytes are loaded only when a preview is actually shown, and
         // off the main thread so selecting a 40 MP screenshot doesn't hitch.
         .task(id: item.id) {

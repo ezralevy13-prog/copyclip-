@@ -22,6 +22,9 @@ ROOT="$(pwd)"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 
+echo "==> Running tests"
+swift test 2>&1 | tail -20
+
 echo "==> Building (release)"
 swift build -c release --disable-sandbox
 

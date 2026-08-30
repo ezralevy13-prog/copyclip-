@@ -12,23 +12,34 @@ final class HistoryStore {
     private let database: SQLiteDatabase
     private let blobs: BlobStore
     private let queue = DispatchQueue(label: "com.ezralevy.clipwell.store")
+    /// OCR is slow, so it runs here after the item is already saved rather
+    /// than holding up capture.
+    private let enrichmentQueue = DispatchQueue(label: "com.ezralevy.clipwell.ocr", qos: .utility)
     private var hasFTS = false
 
     let storageRoot: URL
 
-    init() throws {
-        let support = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ).appendingPathComponent("Clipwell", isDirectory: true)
+    /// - Parameter root: storage directory. Defaults to Application Support;
+    ///   tests pass a temporary directory so they never touch real history.
+    init(root: URL? = nil) throws {
+        let support: URL
+        if let root {
+            support = root
+        } else {
+            support = try FileManager.default.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            ).appendingPathComponent("Clipwell", isDirectory: true)
+        }
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
 
         self.storageRoot = support
         self.database = try SQLiteDatabase(path: support.appendingPathComponent("history.sqlite").path)
         self.blobs = try BlobStore(root: support)
         try createSchema()
+        try reconcileStorage()
     }
 
     // MARK: - Schema
@@ -49,6 +60,7 @@ final class HistoryStore {
                 pinned           INTEGER NOT NULL DEFAULT 0,
                 byte_size        INTEGER NOT NULL DEFAULT 0,
                 thumb_path       TEXT,
+                thumb_size       INTEGER NOT NULL DEFAULT 0,
                 meta             TEXT
             );
             """)
@@ -72,11 +84,100 @@ final class HistoryStore {
         try database.execute("CREATE INDEX IF NOT EXISTS idx_items_recent ON items(pinned DESC, last_used_at DESC);")
         try database.execute("CREATE INDEX IF NOT EXISTS idx_items_kind ON items(kind);")
 
+        // Reference-counted blob accounting.
+        //
+        // This table is what makes eviction cheap. Without it, "how much disk am
+        // I using" means walking the entire blob tree and "which blobs are now
+        // orphaned" means a full table scan -- both of which ran on every single
+        // capture once the history reached its cap.
+        try database.execute("""
+            CREATE TABLE IF NOT EXISTS blobs (
+                hash      TEXT PRIMARY KEY,
+                byte_size INTEGER NOT NULL,
+                ref_count INTEGER NOT NULL DEFAULT 0
+            );
+            """)
+
         // FTS5 ships in Apple's SQLite, but degrade to LIKE rather than refuse
         // to launch if this build lacks it.
         hasFTS = database.tryExecute("CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(search_text);")
         if !hasFTS {
             Log.store.warning("FTS5 unavailable; falling back to LIKE search")
+        }
+
+        try migrate()
+    }
+
+    // MARK: - Migration
+
+    private static let currentSchemaVersion = 2
+
+    private func migrate() throws {
+        var version = 0
+        try database.query("PRAGMA user_version;") { row in version = row.int(0) }
+        guard version < Self.currentSchemaVersion else { return }
+
+        if version < 2 {
+            // v1 stored no thumbnail size and had no blobs table. Add the column
+            // if it isn't there, then let reconcileStorage() backfill both.
+            var hasThumbSize = false
+            try database.query("PRAGMA table_info(items);") { row in
+                if row.string(1) == "thumb_size" { hasThumbSize = true }
+            }
+            if !hasThumbSize {
+                try database.execute("ALTER TABLE items ADD COLUMN thumb_size INTEGER NOT NULL DEFAULT 0;")
+            }
+        }
+
+        try database.execute("PRAGMA user_version = \(Self.currentSchemaVersion);")
+        Log.store.info("migrated schema \(version, privacy: .public) -> \(Self.currentSchemaVersion, privacy: .public)")
+    }
+
+    /// Rebuilds blob accounting from the representation rows and reconciles it
+    /// against what is actually on disk.
+    ///
+    /// Runs once at startup. This is the only place that walks the blob tree,
+    /// and it exists so that a crash mid-write can't leave the refcounts drifting
+    /// from reality forever.
+    private func reconcileStorage() throws {
+        try database.transaction {
+            try database.run("DELETE FROM blobs;")
+            try database.run("""
+                INSERT INTO blobs (hash, byte_size, ref_count)
+                SELECT blob_hash, MAX(byte_size), COUNT(*)
+                FROM representations
+                WHERE blob_hash IS NOT NULL
+                GROUP BY blob_hash;
+                """)
+        }
+
+        // Drop rows for blobs whose file vanished, and delete files no row
+        // references. Both are crash debris rather than normal conditions.
+        var referenced: Set<String> = []
+        try database.query("SELECT hash FROM blobs;") { row in referenced.insert(row.string(0)) }
+
+        let onDisk = blobs.allHashesOnDisk()
+
+        for missing in referenced.subtracting(onDisk) {
+            try database.run("DELETE FROM blobs WHERE hash = ?;", [.text(missing)])
+            Log.store.warning("blob file missing for referenced hash; dropped accounting row")
+        }
+        for orphan in onDisk.subtracting(referenced) {
+            blobs.delete(hash: orphan)
+        }
+
+        // Backfill thumbnail sizes for rows that predate the column.
+        var pending: [(Int64, String)] = []
+        try database.query("SELECT id, thumb_path FROM items WHERE thumb_size = 0 AND thumb_path IS NOT NULL;") { row in
+            if let path = row.optionalString(1) { pending.append((row.int64(0), path)) }
+        }
+        for (id, path) in pending {
+            var size: Int64 = 0
+            if let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+               let number = attributes[.size] as? NSNumber {
+                size = number.int64Value
+            }
+            try database.run("UPDATE items SET thumb_size = ? WHERE id = ?;", [.integer(size), .integer(id)])
         }
     }
 
@@ -126,9 +227,11 @@ final class HistoryStore {
         }
 
         var thumbnailPath: String?
+        var thumbnailSize: Int64 = 0
         if classification.kind == .image, let image = snapshot.bestImage(),
            let thumbnail = ImageUtil.thumbnail(from: image.data, maxPixel: 400) {
             thumbnailPath = try? blobs.writeThumbnail(thumbnail, for: hash)
+            if thumbnailPath != nil { thumbnailSize = Int64(thumbnail.count) }
         }
 
         let itemID: Int64 = try database.transaction {
@@ -136,8 +239,8 @@ final class HistoryStore {
                 INSERT INTO items
                     (content_hash, kind, preview_text, search_text, source_bundle_id,
                      source_app_name, created_at, last_used_at, use_count, pinned,
-                     byte_size, thumb_path, meta)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?);
+                     byte_size, thumb_path, thumb_size, meta)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?);
                 """, [
                     .text(hash),
                     .text(classification.kind.rawValue),
@@ -149,6 +252,7 @@ final class HistoryStore {
                     .date(snapshot.capturedAt),
                     .int(snapshot.totalByteSize),
                     .optionalText(thumbnailPath),
+                    .integer(thumbnailSize),
                     .optionalText(classification.meta.encoded())
                 ])
 
@@ -167,6 +271,7 @@ final class HistoryStore {
                             INSERT INTO representations (item_id, pb_index, uti, blob_hash, byte_size)
                             VALUES (?, ?, ?, ?, ?);
                             """, [.integer(newID), .int(index), .text(uti), .text(blobHash), .int(data.count)])
+                        try retainBlob(hash: blobHash, byteSize: data.count)
                     }
                 }
             }
@@ -182,7 +287,58 @@ final class HistoryStore {
 
         try enforceLimitsLocked()
         notifyChange()
+
+        // Enrich asynchronously: the item is already searchable by app name and
+        // dimensions, and OCR just adds to that when it lands.
+        if classification.kind == .image, Preferences.shared.recognizeTextInImages {
+            scheduleTextRecognition(itemID: itemID)
+        }
         return itemID
+    }
+
+    // MARK: - Image text recognition
+
+    private func scheduleTextRecognition(itemID: Int64) {
+        enrichmentQueue.async { [weak self] in
+            guard let self else { return }
+            guard let imageData = self.fullImageData(for: itemID) else { return }
+            guard let recognized = TextRecognizer.recognizeText(in: imageData) else { return }
+            self.attachRecognizedText(recognized, to: itemID)
+        }
+    }
+
+    private func attachRecognizedText(_ text: String, to itemID: Int64) {
+        queue.sync {
+            do {
+                // The item may have been evicted or deleted while OCR ran.
+                var existingSearch: String?
+                var existingMeta: String?
+                try database.query("SELECT search_text, meta FROM items WHERE id = ?;", [.integer(itemID)]) { row in
+                    existingSearch = row.string(0)
+                    existingMeta = row.optionalString(1)
+                }
+                guard let existingSearch else { return }
+
+                var meta = ClipMeta.decode(existingMeta)
+                meta.recognizedText = text
+
+                let combined = String((existingSearch + " " + text).prefix(16384))
+                try database.run(
+                    "UPDATE items SET search_text = ?, meta = ? WHERE id = ?;",
+                    [.text(combined), .optionalText(meta.encoded()), .integer(itemID)]
+                )
+                if hasFTS {
+                    try database.run(
+                        "UPDATE items_fts SET search_text = ? WHERE rowid = ?;",
+                        [.text(combined), .integer(itemID)]
+                    )
+                }
+                Log.store.debug("attached \(text.count, privacy: .public) chars of recognized text")
+            } catch {
+                Log.store.error("attaching recognized text failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+        notifyChange()
     }
 
     private func transcodeImages(in snapshot: PasteboardSnapshot) -> PasteboardSnapshot {
@@ -315,22 +471,68 @@ final class HistoryStore {
         }
     }
 
+    /// Loads only the first representation matching one of `utis`, in the order
+    /// given.
+    ///
+    /// The whole-item loader pulls every representation, which for an image item
+    /// means fetching megabytes off disk. Most callers want one specific type --
+    /// showing three lines of text should not read a 20 MB PNG -- so they come
+    /// through here and the SQL does the filtering.
+    func representationData(for itemID: Int64, preferring utis: [String]) -> Data? {
+        queue.sync { representationDataLocked(for: itemID, preferring: utis) }
+    }
+
+    private func representationDataLocked(for itemID: Int64, preferring utis: [String]) -> Data? {
+        guard !utis.isEmpty else { return nil }
+        let placeholders = Array(repeating: "?", count: utis.count).joined(separator: ", ")
+
+        // CASE ranks the rows by caller preference so SQLite returns the best
+        // match first and we read exactly one blob.
+        let ranking = utis.enumerated()
+            .map { "WHEN ? THEN \($0.offset)" }
+            .joined(separator: " ")
+
+        var bindings: [SQLiteValue] = [.integer(itemID)]
+        bindings.append(contentsOf: utis.map { .text($0) })   // IN (...)
+        bindings.append(contentsOf: utis.map { .text($0) })   // CASE arms
+
+        var result: Data?
+        do {
+            try database.query("""
+                SELECT inline_data, blob_hash
+                FROM representations
+                WHERE item_id = ? AND uti IN (\(placeholders))
+                ORDER BY CASE uti \(ranking) ELSE 999 END, pb_index, id
+                LIMIT 1;
+                """, bindings) { row in
+                if let inline = row.optionalData(0) {
+                    result = inline
+                } else if let hash = row.optionalString(1) {
+                    result = self.blobs.read(hash: hash)
+                }
+            }
+        } catch {
+            Log.store.error("targeted representation load failed: \(String(describing: error), privacy: .public)")
+        }
+        return result
+    }
+
     /// Full-size image bytes for the preview pane, loaded only on demand.
     func fullImageData(for itemID: Int64) -> Data? {
-        let groups = representations(for: itemID)
-        for group in groups {
-            for uti in UTIs.imagePreferenceOrder {
-                if let data = group[uti] { return data }
-            }
-        }
-        return nil
+        representationData(for: itemID, preferring: UTIs.imagePreferenceOrder)
     }
 
     func plainText(for itemID: Int64) -> String? {
-        let groups = representations(for: itemID)
-        for group in groups {
-            for uti in UTIs.plainTextFamily {
-                if let data = group[uti], let text = String(data: data, encoding: .utf8) { return text }
+        guard let data = representationData(for: itemID, preferring: UTIs.plainTextFamily) else { return nil }
+        return String(data: data, encoding: .utf8) ?? String(data: data, encoding: .utf16)
+    }
+
+    /// Rich-text bytes plus the UTI they were stored under, so the caller knows
+    /// which parser to use.
+    func richTextData(for itemID: Int64) -> (uti: String, data: Data)? {
+        for uti in UTIs.richTextFamily {
+            if let data = representationData(for: itemID, preferring: [uti]) {
+                return (uti, data)
             }
         }
         return nil
@@ -359,7 +561,6 @@ final class HistoryStore {
         queue.sync {
             do {
                 try deleteItemsLocked(ids: [itemID])
-                try collectGarbageLocked()
             } catch {
                 Log.store.error("delete failed: \(String(describing: error), privacy: .public)")
             }
@@ -375,7 +576,6 @@ final class HistoryStore {
                 var ids: [Int64] = []
                 try database.query("SELECT id FROM items \(predicate);") { row in ids.append(row.int64(0)) }
                 try deleteItemsLocked(ids: ids)
-                try collectGarbageLocked()
             } catch {
                 Log.store.error("clear failed: \(String(describing: error), privacy: .public)")
             }
@@ -385,12 +585,23 @@ final class HistoryStore {
 
     private func deleteItemsLocked(ids: [Int64]) throws {
         guard !ids.isEmpty else { return }
-        // Thumbnails aren't reference-counted, so remove them explicitly.
+
+        // Collect what these items reference before deleting the rows.
+        var thumbnails: [String] = []
+        var blobHashes: [String] = []
         for id in ids {
             try database.query("SELECT thumb_path FROM items WHERE id = ?;", [.integer(id)]) { row in
-                if let path = row.optionalString(0) { self.blobs.deleteThumbnail(atPath: path) }
+                if let path = row.optionalString(0) { thumbnails.append(path) }
+            }
+            try database.query(
+                "SELECT blob_hash FROM representations WHERE item_id = ? AND blob_hash IS NOT NULL;",
+                [.integer(id)]
+            ) { row in
+                if let hash = row.optionalString(0) { blobHashes.append(hash) }
             }
         }
+
+        var droppedBlobs: [String] = []
         try database.transaction {
             for id in ids {
                 try database.run("DELETE FROM representations WHERE item_id = ?;", [.integer(id)])
@@ -399,7 +610,56 @@ final class HistoryStore {
                     try database.run("DELETE FROM items_fts WHERE rowid = ?;", [.integer(id)])
                 }
             }
+            // One decrement per reference; a blob only dies at zero, which is
+            // what makes content-addressed sharing safe to evict against.
+            for hash in blobHashes {
+                if try releaseBlob(hash: hash) { droppedBlobs.append(hash) }
+            }
         }
+
+        // Files are removed after the transaction commits, so a rollback can
+        // never leave rows pointing at bytes we already deleted.
+        for hash in droppedBlobs { blobs.delete(hash: hash) }
+        // Thumbnails are per-item, not shared, so they go unconditionally.
+        for path in thumbnails { blobs.deleteThumbnail(atPath: path) }
+    }
+
+    // MARK: - Blob reference counting
+
+    private func retainBlob(hash: String, byteSize: Int) throws {
+        try database.run("""
+            INSERT INTO blobs (hash, byte_size, ref_count) VALUES (?, ?, 1)
+            ON CONFLICT(hash) DO UPDATE SET ref_count = ref_count + 1;
+            """, [.text(hash), .int(byteSize)])
+    }
+
+    /// Drops one reference. Returns true when the blob is now unreferenced and
+    /// its file should be deleted.
+    private func releaseBlob(hash: String) throws -> Bool {
+        var remaining = 0
+        try database.query("SELECT ref_count FROM blobs WHERE hash = ?;", [.text(hash)]) { row in
+            remaining = row.int(0)
+        }
+        guard remaining > 0 else { return false }
+
+        if remaining == 1 {
+            try database.run("DELETE FROM blobs WHERE hash = ?;", [.text(hash)])
+            return true
+        }
+        try database.run("UPDATE blobs SET ref_count = ref_count - 1 WHERE hash = ?;", [.text(hash)])
+        return false
+    }
+
+    /// Total bytes on disk, as two indexed aggregates rather than a directory walk.
+    private func diskUsageLocked() throws -> Int64 {
+        var total: Int64 = 0
+        try database.query("SELECT COALESCE(SUM(byte_size), 0) FROM blobs;") { row in
+            total += row.int64(0)
+        }
+        try database.query("SELECT COALESCE(SUM(thumb_size), 0) FROM items;") { row in
+            total += row.int64(0)
+        }
+        return total
     }
 
     // MARK: - Eviction
@@ -427,14 +687,13 @@ final class HistoryStore {
 
         if !doomed.isEmpty {
             try deleteItemsLocked(ids: doomed)
-            try collectGarbageLocked()
             doomed.removeAll()
         }
 
         // Disk cap. Measured against real on-disk bytes rather than the sum of
         // byte_size, because content-addressing means duplicates share storage.
         let capBytes = Int64(preferences.maxDiskMegabytes) * 1024 * 1024
-        var usage = blobs.diskUsage()
+        var usage = try diskUsageLocked()
         guard usage > capBytes else { return }
 
         var candidates: [(id: Int64, size: Int64)] = []
@@ -452,16 +711,7 @@ final class HistoryStore {
         }
         if !toDelete.isEmpty {
             try deleteItemsLocked(ids: toDelete)
-            try collectGarbageLocked()
         }
-    }
-
-    private func collectGarbageLocked() throws {
-        var referenced: Set<String> = []
-        try database.query("SELECT DISTINCT blob_hash FROM representations WHERE blob_hash IS NOT NULL;") { row in
-            if let hash = row.optionalString(0) { referenced.insert(hash) }
-        }
-        blobs.collectGarbage(referencedHashes: referenced)
     }
 
     // MARK: - Stats
@@ -480,7 +730,8 @@ final class HistoryStore {
                 itemCount = row.int(0)
                 pinnedCount = row.int(1)
             }
-            return Stats(itemCount: itemCount, pinnedCount: pinnedCount, diskBytes: blobs.diskUsage())
+            let disk = (try? diskUsageLocked()) ?? 0
+            return Stats(itemCount: itemCount, pinnedCount: pinnedCount, diskBytes: disk)
         }
     }
 

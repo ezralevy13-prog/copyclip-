@@ -9,27 +9,19 @@ enum Paster {
     /// structure. This is what makes a paste land with the same fidelity as the
     /// original copy -- formatting intact in Word, image intact in Photoshop.
     static func writeToPasteboard(itemID: Int64, store: HistoryStore, plainTextOnly: Bool) {
+        let pasteboard = NSPasteboard.general
+
+        // Paste-as-plain-text needs only the text representation, so ask for
+        // exactly that rather than loading the item's images too.
+        if plainTextOnly, let text = store.plainText(for: itemID), !text.isEmpty {
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            return
+        }
+
         let groups = store.representations(for: itemID)
         guard !groups.isEmpty else { return }
-
-        let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-
-        if plainTextOnly {
-            // Strip everything but text: paste-as-plain-text, which is the one
-            // thing people reliably want a modifier for.
-            let text = groups.compactMap { group -> String? in
-                for uti in UTIs.plainTextFamily {
-                    if let data = group[uti], let string = String(data: data, encoding: .utf8) { return string }
-                }
-                return nil
-            }.joined(separator: "\n")
-
-            if !text.isEmpty {
-                pasteboard.setString(text, forType: .string)
-                return
-            }
-        }
 
         var pasteboardItems: [NSPasteboardItem] = []
         for group in groups {

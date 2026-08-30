@@ -25,6 +25,43 @@ final class MenuBarController: NSObject {
         super.init()
 
         configureButton()
+        observeSkippedSecrets()
+    }
+
+    // MARK: - Skipped-secret feedback
+
+    private var skipFeedbackWorkItem: DispatchWorkItem?
+
+    /// Silently dropping a copy would leave the user thinking the app is
+    /// broken, so the icon briefly changes to say what happened.
+    private func observeSkippedSecrets() {
+        NotificationCenter.default.addObserver(
+            forName: ClipboardMonitor.didSkipSecretNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            // Task rather than MainActor.assumeIsolated, which is macOS 14+.
+            let reason = notification.userInfo?["reason"] as? String
+            Task { @MainActor in self?.flashSkipped(reason: reason) }
+        }
+    }
+
+    private func flashSkipped(reason: String?) {
+        guard let button = statusItem.button else { return }
+        button.image = NSImage(
+            systemSymbolName: "lock.shield.fill",
+            accessibilityDescription: "Skipped a copy that looked like a secret"
+        )
+        button.image?.isTemplate = true
+        button.toolTip = reason.map { "Not recorded: \($0)" }
+
+        skipFeedbackWorkItem?.cancel()
+        let restore = DispatchWorkItem { [weak self] in
+            self?.configureButton()
+            self?.statusItem.button?.toolTip = nil
+        }
+        skipFeedbackWorkItem = restore
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: restore)
     }
 
     private func configureButton() {

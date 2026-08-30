@@ -118,26 +118,21 @@ final class HistoryViewModel: ObservableObject {
     }
 
     nonisolated func attributedText(for item: ClipItem) -> NSAttributedString? {
-        let groups = store.representations(for: item.id)
-        for group in groups {
-            if let rtf = group[UTIs.rtf],
-               let attributed = NSAttributedString(rtf: rtf, documentAttributes: nil) {
-                return attributed
-            }
-            if let rtfd = group[UTIs.rtfd],
-               let attributed = NSAttributedString(rtfd: rtfd, documentAttributes: nil) {
-                return attributed
-            }
-            if let html = group[UTIs.html],
-               let attributed = try? NSAttributedString(
-                    data: html,
-                    options: [.documentType: NSAttributedString.DocumentType.html,
-                              .characterEncoding: String.Encoding.utf8.rawValue],
-                    documentAttributes: nil) {
-                return attributed
-            }
+        guard let (uti, data) = store.richTextData(for: item.id) else { return nil }
+        switch uti {
+        case UTIs.rtf:
+            return NSAttributedString(rtf: data, documentAttributes: nil)
+        case UTIs.rtfd:
+            return NSAttributedString(rtfd: data, documentAttributes: nil)
+        case UTIs.html:
+            return try? NSAttributedString(
+                data: data,
+                options: [.documentType: NSAttributedString.DocumentType.html,
+                          .characterEncoding: String.Encoding.utf8.rawValue],
+                documentAttributes: nil)
+        default:
+            return nil
         }
-        return nil
     }
 
     nonisolated func plainText(for item: ClipItem) -> String? {

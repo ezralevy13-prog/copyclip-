@@ -12,6 +12,9 @@ struct ClipMeta: Codable {
     var linkURL: String?
     var filePaths: [String]?
     var codeLanguage: String?
+    /// Text found inside an image by OCR. Folded into the search
+    /// index so screenshots are findable by their contents.
+    var recognizedText: String?
 
     init() {}
 

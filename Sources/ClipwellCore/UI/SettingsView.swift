@@ -14,6 +14,8 @@ struct SettingsView: View {
     @State private var pollInterval = Preferences.shared.pollInterval
     @State private var pasteAutomatically = Preferences.shared.pasteAutomatically
     @State private var launchAtLogin = Preferences.shared.launchAtLogin
+    @State private var recognizeText = Preferences.shared.recognizeTextInImages
+    @State private var skipSecrets = Preferences.shared.skipDetectedSecrets
     @State private var excluded = Preferences.shared.excludedBundleIDs.sorted()
     @State private var stats: HistoryStore.Stats?
     @State private var hasAccessibility = Paster.hasAccessibilityPermission()
@@ -62,6 +64,14 @@ struct SettingsView: View {
                 .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 7))
             }
 
+            Toggle("Find text inside images", isOn: $recognizeText)
+                .onChange(of: recognizeText) { newValue in
+                    Preferences.shared.recognizeTextInImages = newValue
+                }
+            Text("Reads text out of screenshots shortly after they're copied so you can search for them by their contents. Uses some CPU per image.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+
             Toggle("Launch at login", isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { newValue in
                     Preferences.shared.launchAtLogin = newValue
@@ -92,11 +102,15 @@ struct SettingsView: View {
     private var storageTab: some View {
         Form {
             Section {
+                // Persisted via onChange, not onSubmit: with onSubmit alone,
+                // typing a value and clicking away discarded it silently.
                 LabeledContent("Keep at most") {
                     HStack {
                         TextField("", value: $maxItems, format: .number)
                             .frame(width: 70)
-                            .onSubmit { Preferences.shared.maxItems = maxItems }
+                            .onChange(of: maxItems) { newValue in
+                                Preferences.shared.maxItems = newValue
+                            }
                         Text("items").foregroundStyle(.secondary)
                     }
                 }
@@ -105,7 +119,9 @@ struct SettingsView: View {
                     HStack {
                         TextField("", value: $maxDisk, format: .number)
                             .frame(width: 70)
-                            .onSubmit { Preferences.shared.maxDiskMegabytes = maxDisk }
+                            .onChange(of: maxDisk) { newValue in
+                                Preferences.shared.maxDiskMegabytes = newValue
+                            }
                         Text("MB").foregroundStyle(.secondary)
                     }
                 }
@@ -114,7 +130,9 @@ struct SettingsView: View {
                     HStack {
                         TextField("", value: $maxItemSize, format: .number)
                             .frame(width: 70)
-                            .onSubmit { Preferences.shared.maxItemMegabytes = maxItemSize }
+                            .onChange(of: maxItemSize) { newValue in
+                                Preferences.shared.maxItemMegabytes = newValue
+                            }
                         Text("MB").foregroundStyle(.secondary)
                     }
                 }
@@ -153,6 +171,16 @@ struct SettingsView: View {
 
     private var privacyTab: some View {
         Form {
+            Section("Credentials") {
+                Toggle("Don't record things that look like secrets", isOn: $skipSecrets)
+                    .onChange(of: skipSecrets) { newValue in
+                        Preferences.shared.skipDetectedSecrets = newValue
+                    }
+                Text("Detects API keys, access tokens, private key blocks and card numbers, and skips the copy entirely. The menu bar icon flashes when this happens, so a skipped copy is never silent.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Ignored apps") {
                 Text("Anything copied while one of these apps is frontmost is never recorded.")
                     .font(.caption)
